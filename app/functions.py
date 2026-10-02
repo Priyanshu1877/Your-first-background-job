@@ -1,7 +1,10 @@
 import datetime
+import logging
 import inngest
 from app.inngest_client import inngest_client
-from app.reports import update_report
+from app.reports import reports_db, update_report
+
+logger = logging.getLogger("app.functions")
 
 
 @inngest_client.create_function(
@@ -48,5 +51,26 @@ async def make_report(ctx: inngest.Context) -> dict:
     return report_result
 
 
+@inngest_client.create_function(
+    fn_id="heartbeat",
+    trigger=inngest.TriggerCron(cron="* * * * *"),
+    name="Heartbeat",
+)
+async def heartbeat(ctx: inngest.Context) -> str:
+    """Stage 4 Inngest scheduled function: runs on clock alone (* * * * *) and logs report metrics."""
+    async def _log_summary():
+        pending = sum(1 for r in reports_db.values() if r.get("status") == "pending")
+        done = sum(1 for r in reports_db.values() if r.get("status") == "done")
+        failed = sum(1 for r in reports_db.values() if r.get("status") == "failed")
+
+        summary = f"Heartbeat: pending={pending} done={done} failed={failed}"
+        logger.info(summary)
+        print(summary, flush=True)
+        return summary
+
+    summary_result = await ctx.step.run("log-summary", _log_summary)
+    return summary_result
+
+
 # List of all active Inngest functions
-inngest_functions = [say_hello, make_report]
+inngest_functions = [say_hello, make_report, heartbeat]

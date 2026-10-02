@@ -44,6 +44,60 @@ This project implements the standard **Accept Fast → Work in Background → Re
 
 ---
 
+## Stage 4: Cron Heartbeat (Scheduled Workflow)
+
+The project includes an autonomous scheduled job (`heartbeat`) that runs on the clock alone without any HTTP request or incoming event.
+
+### Function Configuration & Schedule:
+- **Function Name / ID**: `Heartbeat` (`heartbeat`)
+- **Trigger**: `inngest.TriggerCron(cron="* * * * *")`
+- **Testing Schedule**: Every minute (`* * * * *`)
+- **Summary Log Format**:
+  Reads the current in-memory report store and logs one concise summary line:
+  ```
+  Heartbeat: pending=0 done=2 failed=0
+  ```
+- **No HTTP Endpoint**: The heartbeat function has no corresponding HTTP door; it is driven entirely by the Inngest scheduler.
+
+### Cron Expressions Explained:
+
+A standard cron expression consists of five fields evaluated from left to right:
+
+```
+┌───────────── minute (0 - 59)
+│ ┌───────────── hour (0 - 23)
+│ │ ┌───────────── day of the month (1 - 31)
+│ │ │ ┌───────────── month (1 - 12)
+│ │ │ │ ┌───────────── day of the week (0 - 6) (0 to 6 are Sunday to Saturday)
+│ │ │ │ │
+* * * * *
+```
+
+1. **Every day at 08:00**:
+   ```
+   0 8 * * *
+   ```
+   - `0`: Minute 0
+   - `8`: Hour 8 (08:00 AM)
+   - `*`: Every day of the month
+   - `*`: Every month
+   - `*`: Every day of the week
+
+2. **Every Sunday at 22:00**:
+   ```
+   0 22 * * 0
+   ```
+   - `0`: Minute 0
+   - `22`: Hour 22 (10:00 PM)
+   - `*`: Every day of the month
+   - `*`: Every month
+   - `0`: Sunday (day of week 0)
+
+### Timezone Considerations:
+Server environments and cron schedulers (including cloud workers and containers) typically evaluate cron expressions in **UTC (Coordinated Universal Time)** by default. Before relying on a production schedule, always verify the server's configured timezone and convert local business hours to UTC (or specify the timezone explicitly, e.g., `TZ=America/New_York 0 8 * * *`).
+
+---
+
 ## Prerequisites
 
 - **Python**: 3.10+ (tested on Python 3.14)
@@ -104,6 +158,7 @@ npx inngest-cli@latest dev -u http://127.0.0.1:8000/api/inngest
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `Say Hello` | `say-hello` | `test/hello` | Default | 1. `sleep-5s` (5s durable sleep) | Introductory background workflow returning greeting |
 | `Make Report` | `make-report` | `report/requested` | `2` (3 total attempts) | 1. `do-the-slow-work` (~8s durable sleep)<br>2. `build-report` (generates result & updates status to `done`, raises if `fail`) | Asynchronous report generator with retries and failure handling |
+| `Heartbeat` | `heartbeat` | `cron: "* * * * *"` | Default | 1. `log-summary` (aggregates store metrics) | Scheduled cron job running every minute logging report metrics |
 
 ---
 
@@ -166,9 +221,17 @@ Response Body: {"id": "db1e9c05-f359-4247-a72b-cfe811092832", "status": "pending
   - `Retry 1 (Attempt 2)`: Error `"The report oven is broken!"`
   - `Retry 2 (Attempt 3)`: Error `"The report oven is broken!"`
   - `Final State`: **Failed** after 3 attempts with exponential backoff.
+
+### 5. Cron Heartbeat Live Verification (`* * * * *`)
+- **Observed Runs**: Consecutive ticks at `07:13:00 UTC`, `07:14:00 UTC`, `07:15:00 UTC`, `07:16:00 UTC`, `07:17:00 UTC`, and `07:18:00 UTC` (exactly 1 minute apart).
+- **Logged Output**:
+  ```
+  Heartbeat: pending=0 done=2 failed=0
+  ```
 - **Screenshot Artifacts**:
-  - Completed run: [`screenshots/stage2_report_completed.png`](screenshots/stage2_report_completed.png)
+  - Completed report run: [`screenshots/stage2_report_completed.png`](screenshots/stage2_report_completed.png)
   - Retry failure: [`screenshots/stage3_retry_failed.png`](screenshots/stage3_retry_failed.png)
+  - Cron heartbeat runs: [`screenshots/stage4_heartbeat.png`](screenshots/stage4_heartbeat.png)
 
 ---
 
