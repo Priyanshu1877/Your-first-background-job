@@ -28,6 +28,22 @@ This project implements the standard **Accept Fast → Work in Background → Re
 
 ---
 
+## Stage 3: Retries vs. Bad Input Validation
+
+> **"Bad input is rejected at the door; transient background failures are retried."**
+
+### Why this distinction matters:
+- **Bad Input (Rejected immediately)**: If a client submits a request without a topic (e.g. `{}`), retrying the request in the background will never fix the mistake. Invalid inputs must be caught immediately at the HTTP boundary, returning `400 Bad Request` without creating database records or dispatching queue events.
+- **Transient Failures (Retried automatically)**: Once a valid request enters the background queue, network blips, database deadlocks, or external API outages may cause temporary failures. These transient failures deserve automatic retries with exponential backoff.
+- **Retry Count (`retries = 2`)**: Configured on `make-report` via `retries=2`. This results in **3 total attempts**:
+  1. **Attempt 1**: Initial execution fails.
+  2. **Attempt 2**: First retry with backoff fails.
+  3. **Attempt 3**: Second retry with backoff fails.
+  4. **Final State**: Retries exhausted → Status permanently transitions to **Failed**.
+- **Deliberate Failure Trigger**: When `topic == "fail"`, the `build-report` step raises `Exception("The report oven is broken!")` to demonstrate this retry lifecycle.
+
+---
+
 ## Prerequisites
 
 - **Python**: 3.10+ (tested on Python 3.14)
@@ -77,23 +93,23 @@ npx inngest-cli@latest dev -u http://127.0.0.1:8000/api/inngest
 | :--- | :--- | :--- | :--- |
 | `GET` | `/health` | Service health probe | `200 OK` |
 | `GET` | `/api/inngest` | Inngest function introspection & communication endpoint | `200 OK` |
-| `POST` | `/reports` | Fast door: accepts topic, dispatches background event, returns immediately | `202 Accepted` |
+| `POST` | `/reports` | Fast door: accepts topic, dispatches background event, returns immediately (rejects missing topic with 400) | `202 Accepted` / `400 Bad Request` |
 | `GET` | `/reports/{id}` | Status endpoint: returns `pending` initially, `done` + `result` after background job | `200 OK` / `404 Not Found` |
 
 ---
 
 ## Inngest Functions
 
-| Function Name | Function ID | Trigger Event / Schedule | Steps | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| `Say Hello` | `say-hello` | `test/hello` | 1. `sleep-5s` (5s durable sleep) | Introductory background workflow returning greeting |
-| `Make Report` | `make-report` | `report/requested` | 1. `do-the-slow-work` (~8s durable sleep)<br>2. `build-report` (generates result & updates status to `done`) | Asynchronous report generator that offloads slow work from HTTP request |
+| Function Name | Function ID | Trigger Event / Schedule | Retries | Steps | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `Say Hello` | `say-hello` | `test/hello` | Default | 1. `sleep-5s` (5s durable sleep) | Introductory background workflow returning greeting |
+| `Make Report` | `make-report` | `report/requested` | `2` (3 total attempts) | 1. `do-the-slow-work` (~8s durable sleep)<br>2. `build-report` (generates result & updates status to `done`, raises if `fail`) | Asynchronous report generator with retries and failure handling |
 
 ---
 
-## Live Verification Proof: Fast 202 & Eventual Consistency Polling
+## Live Verification Proof
 
-The following actual verification trace was recorded live against the local FastAPI and Inngest Dev Server:
+The following actual verification traces were recorded live against the local FastAPI and Inngest Dev Server:
 
 ### 1. Fast 202 Accepted (< 8 ms)
 ```bash
@@ -110,49 +126,55 @@ Response Body:
 }
 ```
 
-### 2. Immediate Poll (Returns Pending)
+### 2. Eventual Consistency Polling (Pending → Done)
 ```bash
+# Immediate Poll (Returns Pending):
 GET http://127.0.0.1:8000/reports/27fc77eb-58cd-40a7-928a-db240f938cc1
+Status: 200 OK -> {"id": "27fc77eb-...", "topic": "cats", "status": "pending", "result": null}
 
-Status: 200 OK
-Response Body:
-{
-  "id": "27fc77eb-58cd-40a7-928a-db240f938cc1",
-  "topic": "cats",
-  "status": "pending",
-  "result": null
-}
+# Second Poll (After ~9.5 Seconds — Returns Done + Result):
+GET http://127.0.0.1:8000/reports/27fc77eb-58cd-40a7-928a-db240f938cc1
+Status: 200 OK -> {"id": "27fc77eb-...", "topic": "cats", "status": "done", "result": "Summary report on 'cats': Detailed intelligence and data analysis completed."}
 ```
 
-### 3. Second Poll (After ~9.5 Seconds — Returns Done + Result)
+### 3. Bad Input Rejection (HTTP 400)
 ```bash
-GET http://127.0.0.1:8000/reports/27fc77eb-58cd-40a7-928a-db240f938cc1
+POST http://127.0.0.1:8000/reports
+Content-Type: application/json
+Body: {}
 
-Status: 200 OK
+Status: 400 Bad Request
 Response Body:
 {
-  "id": "27fc77eb-58cd-40a7-928a-db240f938cc1",
-  "topic": "cats",
-  "status": "done",
-  "result": "Summary report on 'cats': Detailed intelligence and data analysis completed."
+  "detail": "Field 'topic' is required and cannot be empty"
 }
+# Result: No database record created, no Inngest background event dispatched.
 ```
 
-### 4. Inngest Dashboard Evidence
-Inngest dashboard verification for run `01M3XNP94JGSGJAJ7QG6W5EVHZ`:
-- **Function**: `Make Report` (`make-report`)
-- **Trigger**: `report/requested`
-- **Total Duration**: `8.159s`
-- **Steps**:
-  - `do-the-slow-work`: duration `8.000s`
-  - `build-report`: duration `4ms`
-- **Screenshot Artifact**: [`screenshots/stage2_report_completed.png`](screenshots/stage2_report_completed.png)
+### 4. Background Retry & Final Failure (topic="fail")
+```bash
+POST http://127.0.0.1:8000/reports
+Content-Type: application/json
+Body: {"topic": "fail"}
+
+Status: 202 Accepted
+Response Body: {"id": "db1e9c05-f359-4247-a72b-cfe811092832", "status": "pending"}
+```
+- **Inngest Run ID**: `01M3XPDXZKF86PW6KXX14CKBPY`
+- **Execution Log**:
+  - `Attempt 1`: Error `"The report oven is broken!"`
+  - `Retry 1 (Attempt 2)`: Error `"The report oven is broken!"`
+  - `Retry 2 (Attempt 3)`: Error `"The report oven is broken!"`
+  - `Final State`: **Failed** after 3 attempts with exponential backoff.
+- **Screenshot Artifacts**:
+  - Completed run: [`screenshots/stage2_report_completed.png`](screenshots/stage2_report_completed.png)
+  - Retry failure: [`screenshots/stage3_retry_failed.png`](screenshots/stage3_retry_failed.png)
 
 ---
 
 ## Running Automated Tests
 
-Run the test suite across all implemented stages:
+Run the full pytest suite across all stages:
 
 ```bash
 .\.venv\Scripts\pytest -v

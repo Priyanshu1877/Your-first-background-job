@@ -1,5 +1,7 @@
 import uuid
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 import inngest
 import inngest.fast_api
 import uvicorn
@@ -16,6 +18,15 @@ app = FastAPI(
 )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Ensure schema validation errors return 400 Bad Request immediately."""
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"detail": "Bad request: 'topic' field is required"},
+    )
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint confirming server operational status."""
@@ -28,7 +39,16 @@ def health_check():
     response_model=CreateReportResponse,
 )
 async def request_report(request: CreateReportRequest):
-    """Fast door: accepts report request, dispatches background event, returns 202 immediately."""
+    """Fast door: accepts report request, dispatches background event, returns 202 immediately.
+    Rejects bad input immediately with 400 before creating records or dispatching events.
+    """
+    # Reject missing or empty topic immediately
+    if not request.topic or not request.topic.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Field 'topic' is required and cannot be empty",
+        )
+
     report_id = str(uuid.uuid4())
 
     # 1. Save initial report record with pending status

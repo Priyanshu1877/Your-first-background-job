@@ -18,10 +18,11 @@ async def say_hello(ctx: inngest.Context) -> str:
 @inngest_client.create_function(
     fn_id="make-report",
     trigger=inngest.TriggerEvent(event="report/requested"),
+    retries=2,
     name="Make Report",
 )
 async def make_report(ctx: inngest.Context) -> dict:
-    """Stage 2 Inngest function: 2-step workflow for background report generation."""
+    """Stage 2 & 3 Inngest function: 2-step workflow with retries=2 and deliberate failure trigger."""
     report_id = ctx.event.data.get("id")
     topic = ctx.event.data.get("topic")
 
@@ -30,6 +31,10 @@ async def make_report(ctx: inngest.Context) -> dict:
 
     # Step 2: build-report (generates the report result and updates store to done)
     async def _build_report():
+        # Deliberately simulate transient background failure if topic == 'fail'
+        if topic == "fail":
+            raise Exception("The report oven is broken!")
+
         result = f"Summary report on '{topic}': Detailed intelligence and data analysis completed."
         update_report(report_id, status="done", result=result)
         return {
