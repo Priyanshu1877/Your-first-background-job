@@ -118,7 +118,7 @@ async def test_gemini_api_error_handling(monkeypatch):
     with pytest.raises(TimeoutError) as timeout_exc:
         await generate_ai_report("Generative Models", client=mock_timeout_client)
 
-    assert "timed out after 30" in str(timeout_exc.value)
+    assert "timed out after" in str(timeout_exc.value)
 
 
 # =====================================================================

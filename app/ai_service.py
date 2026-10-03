@@ -6,10 +6,37 @@ import httpx
 
 logger = logging.getLogger("app.ai_service")
 
+
+def _load_env_file() -> None:
+    """Lightweight .env loader without third-party dependencies."""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(base_dir, ".env"),
+        os.path.join(os.path.dirname(base_dir), ".env"),
+    ]
+    for env_path in candidates:
+        if os.path.isfile(env_path):
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip('"').strip("'")
+                            if k and k not in os.environ:
+                                os.environ[k] = v
+            except Exception:
+                pass
+
+
+# Load local .env if present
+_load_env_file()
+
 # Configuration constants
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash"
 GEMINI_API_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-REQUEST_TIMEOUT_SECONDS = 30.0
+REQUEST_TIMEOUT_SECONDS = 45.0
 
 # Lightweight demonstration guardrail patterns
 PROMPT_INJECTION_PATTERNS = [
@@ -75,7 +102,8 @@ def construct_prompt(topic: str) -> str:
         "3. Do not invent citations, fabricate numbers, or claim access to confidential or live databases.\n"
         "4. Clearly distinguish verified facts from analytical uncertainty or projections.\n"
         "5. Provide actionable insights and strategic depth rather than generic summaries.\n"
-        "6. Your response MUST strictly contain the following 5 markdown sections:\n\n"
+        "6. Keep each section concise and punchy (approximately 100-150 words per section) so all sections are fully written.\n"
+        "7. Your response MUST strictly contain the following 5 markdown sections:\n\n"
         "## Executive Summary\n"
         "## Key Insights\n"
         "## Important Trends / Drivers\n"
@@ -139,7 +167,7 @@ async def generate_ai_report(topic: str, client: Optional[httpx.AsyncClient] = N
         ],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 2048,
+            "maxOutputTokens": 4096,
         },
     }
 
