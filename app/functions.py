@@ -4,6 +4,8 @@ import inngest
 from app.inngest_client import inngest_client
 from app.reports import reports_db, update_report
 
+from app.ai_service import evaluate_guardrail, generate_ai_report
+
 logger = logging.getLogger("app.functions")
 
 
@@ -25,20 +27,36 @@ async def say_hello(ctx: inngest.Context) -> str:
     name="Make Report",
 )
 async def make_report(ctx: inngest.Context) -> dict:
-    """Stage 2 & 3 Inngest function: 2-step workflow with retries=2 and deliberate failure trigger."""
+    """Stage 2 & 3 Inngest function: 2-step durable workflow with retries=2, AI generation, and guardrails."""
     report_id = ctx.event.data.get("id")
     topic = ctx.event.data.get("topic")
 
     # Step 1: do-the-slow-work (approximately 8-second durable sleep)
     await ctx.step.sleep("do-the-slow-work", datetime.timedelta(seconds=8))
 
-    # Step 2: build-report (generates the report result and updates store to done)
+    # Step 2: build-report (runs guardrails, generates AI synthesis or safe refusal, updates store)
     async def _build_report():
-        # Deliberately simulate transient background failure if topic == 'fail'
+        # Deliberately simulate transient background failure if topic == 'fail' (preserves BE-06 Stage 3)
         if topic == "fail":
             raise Exception("The report oven is broken!")
 
-        result = f"Summary report on '{topic}': Detailed intelligence and data analysis completed."
+        # 1. Lightweight demonstration guardrail check
+        is_safe, refusal_reason = evaluate_guardrail(topic)
+        if not is_safe:
+            result = (
+                f"[Guardrail Refusal] Input flagged: {refusal_reason}\n\n"
+                f"Topic '{topic}' was refused by safety guardrails. No AI model request was dispatched."
+            )
+            update_report(report_id, status="done", result=result)
+            return {
+                "id": report_id,
+                "topic": topic,
+                "status": "done",
+                "result": result,
+            }
+
+        # 2. Asynchronous AI synthesis (Gemini 2.5 Flash / offline development fallback)
+        result = await generate_ai_report(topic)
         update_report(report_id, status="done", result=result)
         return {
             "id": report_id,
